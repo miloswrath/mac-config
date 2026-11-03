@@ -54,3 +54,7 @@ cask "visual-studio-code"
 brew "docker"
 brew "docker-compose"
 brew "colima"
+
+# Personal tools that are useful
+brew "discord"
+brew "obsidian"
