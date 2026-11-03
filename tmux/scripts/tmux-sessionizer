@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Imperative macOS adaptation of modules/scripts/tmux-sessionizer.nix.
+set -euo pipefail
+kitty_overlay=0
+origin_window=''
+if [[ ${1:-} == --kitty-overlay ]]; then
+  kitty_overlay=1
+  origin_window=${2:-}
+  if [[ -z "$origin_window" || "$origin_window" == *[!0-9]* ]]; then
+    printf 'Kitty overlay requires the originating window ID.\n' >&2
+    exit 2
+  fi
+  shift 2
+fi
+if [[ $# -gt 1 ]]; then
+  printf 'Usage: tmux-sessionizer [directory]\n' >&2
+  exit 2
+fi
+if [[ $# -eq 1 ]]; then
+  selected=$1
+else
+  roots=("$HOME")
+  for root in "$HOME/Projects" "$HOME/projects" "$HOME/Developer" "$HOME/dev" \
+      "$HOME/src" "$HOME/work" "$HOME/git-clone" "$HOME/school"; do
+    [[ ! -d "$root" ]] || roots+=("$root")
+  done
+  selected=$(fd --min-depth 1 --max-depth 1 --type d --absolute-path . "${roots[@]}" |
+    LC_ALL=C sort -u | fzf --prompt='Project > ') || exit 0
+fi
+[[ -n "$selected" ]] || exit 0
+if [[ ! -d "$selected" ]]; then
+  printf 'Directory does not exist: %s\n' "$selected" >&2
+  exit 1
+fi
+selected=$(cd -- "$selected" && pwd -P)
+selected_name=$(basename -- "$selected" | tr ' .:' '---')
+# Include a stable path checksum to distinguish projects sharing a directory name.
+checksum=$(printf '%s' "$selected" | cksum | cut -d ' ' -f 1)
+selected_name="${selected_name}-${checksum}"
+if [[ $kitty_overlay == 1 ]]; then
+  # Kitty overlays are not themselves tmux clients. Find the tmux client
+  # belonging to the originating Kitty window, even with several clients open.
+  target_client=''
+  while read -r client_pid client_tty; do
+    [[ -n "$client_pid" ]] || continue
+    client_env=$(ps eww -p "$client_pid" -o command= 2>/dev/null || true)
+    if [[ -n ${KITTY_PID:-} &&
+          " $client_env " == *" KITTY_WINDOW_ID=$origin_window "* &&
+          " $client_env " == *" KITTY_PID=$KITTY_PID "* ]]; then
+      target_client=$client_tty
+      break
+    fi
+  done < <(tmux list-clients -F '#{client_pid} #{client_tty}' 2>/dev/null || true)
+  if [[ -n "$target_client" ]]; then
+    if ! tmux has-session -t "=$selected_name" 2>/dev/null; then
+      tmux new-session -ds "$selected_name" -c "$selected"
+    fi
+    exec tmux switch-client -c "$target_client" -t "=$selected_name"
+  fi
+  # If no originating client can be identified, attach in the overlay itself.
+  # This opens the selected project without switching an unrelated terminal.
+  unset TMUX
+  exec tmux new-session -A -s "$selected_name" -c "$selected"
+fi
+if [[ -z "${TMUX:-}" ]]; then
+  exec tmux new-session -A -s "$selected_name" -c "$selected"
+fi
+if ! tmux has-session -t "=$selected_name" 2>/dev/null; then
+  tmux new-session -ds "$selected_name" -c "$selected"
+fi
+tmux switch-client -t "=$selected_name"
